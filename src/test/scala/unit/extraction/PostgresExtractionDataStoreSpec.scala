@@ -3,7 +3,6 @@ package org.deepdive.test.unit
 import anorm._
 import org.deepdive.datastore._
 import org.deepdive.extraction._
-import org.deepdive.extraction.datastore._
 import org.deepdive.test._
 import org.scalatest._
 import scala.io.Source
@@ -11,12 +10,12 @@ import play.api.libs.json._
 import java.io.StringWriter
 
 class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
-  with PostgresExtractionDataStoreComponent {
+  with PostgresDataStoreComponent {
 
-  lazy implicit val connection = PostgresDataStore.borrowConnection()
+  lazy implicit val connection = dataStore.borrowConnection()
 
   before {
-    JdbcDataStore.init()
+    JdbcDataStoreObject.init()
     dataStore.init()
     SQL("drop schema if exists public cascade; create schema public;").execute()
     SQL("""create table datatype_test(id bigserial primary key, key integer, some_text text, 
@@ -25,7 +24,7 @@ class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
   }
 
   after {
-    JdbcDataStore.close()
+    JdbcDataStoreObject.close()
   }
 
   describe("Querying as a Map") {
@@ -110,6 +109,7 @@ class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
       assert(result.head.asInstanceOf[JsObject].value == Map[String, JsValue](
         "id" -> JsNumber(1),
         "key" -> JsNumber(1),
+        "some_null" -> JsNull,
         "some_text" -> JsString("Hello"),
         "some_boolean" -> JsBoolean(true),
         "some_double" -> JsNumber(1.0),
@@ -142,7 +142,7 @@ class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
 
   describe ("Writing to the data store") {
 
-    it("should work") {
+    it("should work with null values") {
       val testRow = JsObject(Map[String, JsValue](
         "key" -> JsNumber(100),
         "some_text" -> JsString("I am sample text."),
@@ -154,12 +154,12 @@ class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
       dataStore.addBatch(List(testRow).iterator, "datatype_test")
       val result = dataStore.queryAsJson("SELECT * from datatype_test")(_.toList)
       val resultFields = result.head.fields
-      val expectedResult = testRow.value.filterKeys(_ != "some_null")
+      val expectedResult = testRow.value
       assert(resultFields.toMap.filterKeys(_ != "id").values.toSet == expectedResult.values.toSet) 
     }
   }
 
-  it("should correctly insert arrays with escape characters") {
+  it("should correctly handle null values, and insert arrays with escape characters") {
     val jsonArr = Json.parse("""["dobj@","@prep_}as","dobj\"@nsubj","dobj@prep_\\","dobj@prep_to"]""")
     val testRow = JsObject(Map[String, JsValue](
         "key" -> JsNull,
@@ -173,7 +173,7 @@ class PostgresExtractionDataStoreSpec extends FunSpec with BeforeAndAfter
     val result = dataStore.queryAsJson("SELECT * from datatype_test")(_.toList)
     val resultFields = result.head.fields
     val expectedResult = testRow.value
-    assert(resultFields.toMap.filterKeys(_ != "id") == Map("some_array" -> jsonArr)) 
+    assert(resultFields.toMap.filterKeys(_ != "id").values.toSet == expectedResult.values.toSet)
   }
 }
   

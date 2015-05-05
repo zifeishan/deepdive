@@ -1,6 +1,8 @@
 package org.deepdive.settings
 
 import org.deepdive.Logging
+import org.deepdive.Context
+import org.deepdive.helpers.Helpers
 import com.typesafe.config._
 import scala.collection.JavaConversions._
 import scala.util.Try
@@ -10,19 +12,19 @@ object SettingsParser extends Logging {
    def loadFromConfig(rootConfig: Config) : Settings = {
     val config = rootConfig.getConfig("deepdive")
 
+    val inferenceSettings = loadInferenceSettings(config)
     val dbSettings = loadDbSettings(config)
     val schemaSettings = loadSchemaSettings(config)
     val extractors = loadExtractionSettings(config)
-    val inferenceSettings = loadInferenceSettings(config)
     val calibrationSettings = loadCalibrationSettings(config)
     val samplerSettings = loadSamplerSettings(config)
     val pipelineSettings = loadPipelineSettings(config)
 
     // Make sure that the variables related to the Greenplum distributed
     // filesystem are set if the user wants to use parallel grounding
-    if (inferenceSettings.parallelGrounding) {
+    if (dbSettings.gpload) {
       if (dbSettings.gphost == "" || dbSettings.gpport == "" || dbSettings.gppath == "") {
-        throw new RuntimeException(s"inference.parallelGrounding is set to true, but one of db.default.gphost, db.default.gpport, or db.default.gppath is not specified")
+        throw new RuntimeException(s"Parallel Loading is set to true, but one of db.default.gphost, db.default.gpport, or db.default.gppath is not specified")
       }
     }
 
@@ -34,7 +36,7 @@ object SettingsParser extends Logging {
   private def loadDbSettings(config: Config) : DbSettings = {
     val dbConfig = Try(config.getConfig("db.default")).getOrElse {
       log.warning("No schema defined.")
-      return DbSettings(null, null, null, null, null, null, null, null, null, null)
+      return DbSettings(Helpers.PsqlDriver, null, null, null, null, null, null, null, null, null, false)
     }
     val driver = Try(dbConfig.getString("driver")).getOrElse(null)
     val url = Try(dbConfig.getString("url")).getOrElse(null)
@@ -46,12 +48,14 @@ object SettingsParser extends Logging {
     val gphost = Try(dbConfig.getString("gphost")).getOrElse("")
     val gpport = Try(dbConfig.getString("gpport")).getOrElse("")
     var gppath = Try(dbConfig.getString("gppath")).getOrElse("")
+    val parallelGrounding = Try(config.getConfig("inference").getBoolean("parallel_grounding")).getOrElse(false)
+    var gpload = Try(dbConfig.getBoolean("gpload")).getOrElse(false) || parallelGrounding
     if (gppath.takeRight(1) == "/") gppath = gppath.take(gppath.length -1)
     log.info(s"Database settings: user ${user}, dbname ${dbname}, host ${host}, port ${port}.")
     if (gphost != "") {
       log.info(s"GPFDIST settings: host ${gphost} port ${gpport} path ${gppath}")
     }
-    return DbSettings(driver, url, user, password, dbname, host, port, gphost, gppath, gpport)
+    return DbSettings(driver, url, user, password, dbname, host, port, gphost, gppath, gpport, gpload)
   }
 
 
@@ -102,8 +106,21 @@ object SettingsParser extends Logging {
           val dependencies = Try (extractorConfig.getStringList ("dependencies").toSet).getOrElse (Set () )
           val beforeScript = Try (extractorConfig.getString ("before") ).toOption
           val afterScript = Try (extractorConfig.getString ("after") ).toOption
+          val loader = Try (extractorConfig.getString ("loader") ).getOrElse("")
+          val loaderConfigObj = Try (extractorConfig.getConfig ("loader_config") ).getOrElse(null)
+          val loaderConfig = loaderConfigObj match {
+            case null => null
+            case _ => LoaderConfig (
+                loaderConfigObj.getString("connection"),
+                loaderConfigObj.getString("schema"),
+                Try(loaderConfigObj.getInt("threads")).getOrElse(parallelism),
+                Try(loaderConfigObj.getInt("parallel_transactions")).getOrElse(60)
+            )
+          }
           Extractor(extractorName, style, outputRelation, inputQuery, udf, parallelism,
-            inputBatchSize, outputBatchSize, dependencies, beforeScript, afterScript, sqlQuery, cmd)
+            inputBatchSize, outputBatchSize, dependencies, beforeScript, afterScript, sqlQuery, cmd,
+            loader, loaderConfig)
+
         case "sql_extractor" | "cmd_extractor" =>
           val sqlQuery = Try (extractorConfig.getString (s"sql") ).getOrElse ("")
           val cmd = Try (extractorConfig.getString ("cmd") ).toOption
@@ -161,12 +178,13 @@ object SettingsParser extends Logging {
 
   private def loadCalibrationSettings(config: Config) : CalibrationSettings = {
     val calibrationConfig = Try(config.getConfig("calibration")).getOrElse { 
-      return CalibrationSettings(0.0, None)
+      return CalibrationSettings(0.0, None, None)
     }
     val holdoutFraction = Try(calibrationConfig.getDouble("holdout_fraction")).getOrElse(0.0)
     val holdoutQuery = Try(calibrationConfig.getString("holdout_query")).toOption
+    val observationQuery = Try(calibrationConfig.getString("observation_query")).toOption
 
-    CalibrationSettings(holdoutFraction, holdoutQuery)
+    CalibrationSettings(holdoutFraction, holdoutQuery, observationQuery)
   }
 
   private def loadSamplerSettings(config: Config) : SamplerSettings = {
@@ -178,10 +196,10 @@ object SettingsParser extends Logging {
         val osname = System.getProperty("os.name")
         log.info(s"Detected OS: ${osname}")
         if (osname.startsWith("Linux")) {
-          "util/sampler-dw-linux gibbs"
+          s"${Context.deepdiveHome}/util/sampler-dw-linux gibbs"
         }
         else {
-          "util/sampler-dw-mac gibbs"
+          s"${Context.deepdiveHome}/util/sampler-dw-mac gibbs"
         }
       case _ => samplingConfig.getString("sampler_cmd")
     }

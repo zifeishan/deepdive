@@ -7,9 +7,10 @@ import akka.util.Timeout
 import org.deepdive.{Context, TaskManager}
 import org.deepdive.settings._
 import org.deepdive.extraction._
-import org.deepdive.extraction.datastore._
+import org.deepdive.datastore._
 import scala.collection.mutable.{PriorityQueue, ArrayBuffer, Map}
 import scala.concurrent.duration._
+import scala.language.postfixOps
 import scala.util.{Try, Success, Failure}
 
 /* Companion Object for the Extraction Mangager */
@@ -19,11 +20,16 @@ object ExtractionManager {
   def props(parallelism: Int, dbSettings: DbSettings) : Props = {
     dbSettings.driver match {
       case "org.postgresql.Driver" => Props(classOf[PostgresExtractionManager], parallelism, dbSettings)
+
+      case "com.mysql.jdbc.Driver" => Props(classOf[MysqlExtractionManager], parallelism, dbSettings)
     }
   }
 
   class PostgresExtractionManager(val parallelism: Int, val dbSettings: DbSettings) extends ExtractionManager
-    with PostgresExtractionDataStoreComponent
+    with PostgresDataStoreComponent
+
+  class MysqlExtractionManager(val parallelism: Int, val dbSettings: DbSettings) extends ExtractionManager
+    with MysqlDataStoreComponent
 
   case object ScheduleTasks
 
@@ -36,7 +42,7 @@ object ExtractionManager {
  * extractions tasks in the correct order. It parallelizes execution when possible.
  */ 
 trait ExtractionManager extends Actor with ActorLogging {
-  this: ExtractionDataStoreComponent =>
+  this: JdbcDataStoreComponent =>
 
   import ExtractionManager._
 

@@ -189,6 +189,119 @@ class SettingsParserSpec extends FunSpec with PrivateMethodTester with Logging {
         val result = SettingsParser invokePrivate loadExtractionSettings(config)
       }
     }
+
+    it("should work with loader configuration") {
+      val config = ConfigFactory.parseString("""
+      extraction.parallelism: 5
+      extraction.extractors.ext_people {
+        parallelism: 6
+        input: "SELECT sentence_id, words, ner_tags FROM sentences"
+        output_relation: "people_mentions"
+        udf: "udf/ext_people.py"
+        dependencies: ["ext_create_index_sentences"]
+        input_batch_size: 4000
+        output_batch_size:1000
+        style: "tsv_extractor"
+        loader: "ndbloader"
+        loader_config: {
+          threads: 4
+          schema: "udf/people_mentions.loaderschema"
+          parallel_transactions: 100
+          connection: "127.0.0.1:1186"
+        }
+      }
+      """).withFallback(defaultConfig)
+      val loadExtractionSettings = PrivateMethod[ExtractionSettings]('loadExtractionSettings)
+      val result = SettingsParser invokePrivate loadExtractionSettings(config)
+      assert(result == ExtractionSettings(List(
+        Extractor("ext_people", "tsv_extractor", "people_mentions", 
+          "SELECT sentence_id, words, ner_tags FROM sentences", 
+          "udf/ext_people.py",
+          6, 4000, 1000, Set("ext_create_index_sentences"), 
+          None, None, "", None, "ndbloader", 
+          LoaderConfig("127.0.0.1:1186", "udf/people_mentions.loaderschema", 4, 100)
+          )), 5))
+    }
+
+    it("should work with default loader configuration") {
+      val config = ConfigFactory.parseString("""
+      extraction.parallelism: 5
+      extraction.extractors.ext_people {
+        parallelism: 6
+        input: "SELECT sentence_id, words, ner_tags FROM sentences"
+        output_relation: "people_mentions"
+        udf: "udf/ext_people.py"
+        dependencies: ["ext_create_index_sentences"]
+        input_batch_size: 4000
+        output_batch_size:1000
+        style: "tsv_extractor"
+        loader: "ndbloader"
+        loader_config: {
+          schema: "udf/people_mentions.loaderschema"
+          connection: "127.0.0.1:1186"
+        }
+      }
+      """).withFallback(defaultConfig)
+      val loadExtractionSettings = PrivateMethod[ExtractionSettings]('loadExtractionSettings)
+      val result = SettingsParser invokePrivate loadExtractionSettings(config)
+      assert(result == ExtractionSettings(List(
+        Extractor("ext_people", "tsv_extractor", "people_mentions", 
+          "SELECT sentence_id, words, ner_tags FROM sentences", 
+          "udf/ext_people.py",
+          6, 4000, 1000, Set("ext_create_index_sentences"), 
+          None, None, "", None, "ndbloader", 
+          LoaderConfig("127.0.0.1:1186", "udf/people_mentions.loaderschema", 6, 60)
+          )), 5))
+    }
+
+    it("should fail with wrong loader configuration (no connection)") {
+      val config = ConfigFactory.parseString("""
+      extraction.parallelism: 5
+      extraction.extractors.ext_people {
+        parallelism: 6
+        input: "SELECT sentence_id, words, ner_tags FROM sentences"
+        output_relation: "people_mentions"
+        udf: "udf/ext_people.py"
+        dependencies: ["ext_create_index_sentences"]
+        input_batch_size: 4000
+        output_batch_size:1000
+        style: "tsv_extractor"
+        loader: "ndbloader"
+        loader_config: {
+          schema: "udf/people_mentions.loaderschema"
+        }
+      }
+      """).withFallback(defaultConfig)
+      val loadExtractionSettings = PrivateMethod[ExtractionSettings]('loadExtractionSettings)
+      intercept[Exception] {
+        val result = SettingsParser invokePrivate loadExtractionSettings(config)
+      }
+    }
+
+    it("should fail with wrong loader configuration (no schema)") {
+      val config = ConfigFactory.parseString("""
+      extraction.parallelism: 5
+      extraction.extractors.ext_people {
+        parallelism: 6
+        input: "SELECT sentence_id, words, ner_tags FROM sentences"
+        output_relation: "people_mentions"
+        udf: "udf/ext_people.py"
+        dependencies: ["ext_create_index_sentences"]
+        input_batch_size: 4000
+        output_batch_size:1000
+        style: "tsv_extractor"
+        loader: "ndbloader"
+        loader_config: {
+          connection: "127.0.0.1:1186"
+        }
+      }
+      """).withFallback(defaultConfig)
+      val loadExtractionSettings = PrivateMethod[ExtractionSettings]('loadExtractionSettings)
+      intercept[Exception] {
+        val result = SettingsParser invokePrivate loadExtractionSettings(config)
+      }
+    }
+
   }
 
   describe("Parsing Inference Settings") {
@@ -227,16 +340,17 @@ class SettingsParserSpec extends FunSpec with PrivateMethodTester with Logging {
       val config = ConfigFactory.parseString("""
         calibration.holdout_fraction: 0.25
         calibration.holdout_query: "SELECT 0;"
+        calibration.observation_query: "SELECT 1;"
       """)
       val loadCalibrationSettings = PrivateMethod[CalibrationSettings]('loadCalibrationSettings)
       val result = SettingsParser invokePrivate loadCalibrationSettings(config)
-      assert(result == CalibrationSettings(0.25, Option("SELECT 0;")))
+      assert(result == CalibrationSettings(0.25, Option("SELECT 0;"), Option("SELECT 1;")))
     }
 
     it ("should work when not specified") {
       val loadCalibrationSettings = PrivateMethod[CalibrationSettings]('loadCalibrationSettings)
       val result = SettingsParser invokePrivate loadCalibrationSettings(ConfigFactory.parseString(""))
-      assert(result == CalibrationSettings(0, None))
+      assert(result == CalibrationSettings(0, None, None))
     }
   }
 

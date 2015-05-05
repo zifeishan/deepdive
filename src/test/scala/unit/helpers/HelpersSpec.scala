@@ -13,8 +13,8 @@ class HelpersSpec extends FunSpec with BeforeAndAfter {
     it("should work") {
       val bashFile = File.createTempFile("test", ".sh")
       val writer = new PrintWriter(bashFile)
-      val testPath = s"${Context.outputDir}/test_tmp}"
-      writer.println(s"touch ${testPath}")
+      val testPath = s"${Context.outputDir}/test_tmp"
+      writer.println(s"mkdir -p ${Context.outputDir} && touch ${testPath}")
       writer.close()
 
       Helpers.executeCmd(bashFile.getAbsolutePath())
@@ -39,15 +39,33 @@ class HelpersSpec extends FunSpec with BeforeAndAfter {
   }
 
   describe("Building psql command helper function") {
-    it("should work") {
-      val dbSettings = DbSettings(null, null, "user", null, "dbname", 
-        "host", "port", null, null, null)
+    it("should work for queries without quotes") {
+      val dbSettings = DbSettings(Helpers.PsqlDriver, null, "user", null, "dbname", 
+        "host", "port", null, null, null, false)
       val query = "select * from test;"
-      val cmd = Helpers.buildPsqlCmd(dbSettings, query)
-      val trueCmd = "psql -d dbname -U user -p port -h host -c \"\"\"" + query + "\"\"\""
-      assert(cmd === trueCmd)
-
+      val cmd = Helpers.buildSqlCmd(dbSettings, query)
+      val trueCmd = "psql -d dbname -U user -p port -h host -c '" + query + "'"
+      assert(cmd.replaceAll(" +", " ").trim() === trueCmd)
     }
+
+    it("should work for queries with single-quotes") {
+      val dbSettings = DbSettings(Helpers.PsqlDriver, null, "user", null, "dbname", 
+        "host", "port", null, null, null, false)
+      val query = "select '123';"
+      val cmd = Helpers.buildSqlCmd(dbSettings, query)
+      val trueCmd = "psql -d dbname -U user -p port -h host -c 'select '\\''123'\\'';'"
+      assert(cmd.replaceAll(" +", " ").trim() === trueCmd)
+    }
+
+    it("should work for queries with double-quotes") {
+      val dbSettings = DbSettings(Helpers.PsqlDriver, null, "user", null, "dbname", 
+        "host", "port", null, null, null, false)
+      val query = "select \"123\";"
+      val cmd = Helpers.buildSqlCmd(dbSettings, query)
+      val trueCmd = "psql -d dbname -U user -p port -h host -c 'select \"123\";'"
+      assert(cmd.replaceAll(" +", " ").trim() === trueCmd)
+    }
+
   }
 
 }

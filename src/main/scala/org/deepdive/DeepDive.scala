@@ -5,14 +5,14 @@ import akka.util.Timeout
 import com.typesafe.config._
 import java.io.File
 import org.deepdive.settings._
-import org.deepdive.datastore.{JdbcDataStore}
-import org.deepdive.extraction.{ExtractionManager, ExtractionTask, ExtractionTaskResult}
-import org.deepdive.extraction.datastore._
-import org.deepdive.inference.{InferenceManager, FactorGraphBuilder}
+import org.deepdive.datastore._
+import org.deepdive.extraction.{ExtractionManager, ExtractionTask}
+import org.deepdive.inference.{InferenceManager}
 import org.deepdive.profiling._
 import org.deepdive.calibration._
 import scala.concurrent.duration._
 import scala.concurrent.{Future, Await}
+import scala.language.postfixOps
 import scala.io.Source
 import scala.util.{Try, Success, Failure}
 
@@ -20,8 +20,11 @@ object DeepDive extends Logging {
 
   def run(config: Config, outputDir: String) {
 
-    // Get the actor system
+    // Initialize and get the actor system
     val system = Context.system
+
+    // catching all exceptions and terminate Akka
+    try {
 
     // Load Settings
     val settings = Settings.loadFromConfig(config)
@@ -50,11 +53,11 @@ object DeepDive extends Logging {
     }
 
     // Setup the data store
-    JdbcDataStore.init(config)
+    JdbcDataStoreObject.init(config)
     settings.schemaSettings.setupFile.foreach { file =>
       log.info(s"Setting up the schema using ${file}")
       val cmd = Source.fromFile(file).getLines.mkString("\n")
-      JdbcDataStore.executeCmd(cmd)
+      JdbcDataStoreObject.executeSqlQueries(cmd)
     }
     
     implicit val timeout = Timeout(1337 hours)
@@ -84,9 +87,8 @@ object DeepDive extends Logging {
     }
     
     val groundFactorGraphMsg = InferenceManager.GroundFactorGraph(
-      activeFactors, settings.calibrationSettings.holdoutFraction, settings.calibrationSettings.holdoutQuery,
-        settings.inferenceSettings.skipLearning, settings.inferenceSettings.weightTable,
-        settings.inferenceSettings.parallelGrounding
+      activeFactors, settings.calibrationSettings,
+        settings.inferenceSettings.skipLearning, settings.inferenceSettings.weightTable
     )
     val groundFactorGraphTask = Task("inference_grounding", extractionTasks.map(_.id), 
       groundFactorGraphMsg, inferenceManager)
@@ -95,7 +97,7 @@ object DeepDive extends Logging {
     val inferenceTask = Task("inference", extractionTasks.map(_.id) ++ Seq("inference_grounding"),
       InferenceManager.RunInference(activeFactors, settings.calibrationSettings.holdoutFraction, 
         settings.calibrationSettings.holdoutQuery, settings.samplerSettings.samplerCmd, 
-        settings.samplerSettings.samplerArgs, skipSerializing, settings.dbSettings, settings.inferenceSettings.parallelGrounding), 
+        settings.samplerSettings.samplerArgs, skipSerializing, settings.dbSettings), 
         inferenceManager, true)
 
     val calibrationTask = Task("calibration", List("inference"), 
@@ -119,7 +121,12 @@ object DeepDive extends Logging {
       
 
     // Create a default pipeline that executes all tasks
-    val defaultPipeline = Pipeline("_default", allTasks.map(_.id).toSet)
+    val defaultPipeline = Pipeline("_default", 
+      activeFactors.size match {
+        // If no factors are active, do not run inference tasks
+        case 0 => allTasks.map(_.id).toSet -- Set("inference_grounding", "inference", "calibration")
+        case _ => allTasks.map(_.id).toSet
+      })
 
     // Create a pipeline that runs only from learning
     val relearnPipeline = Pipeline("_relearn", Set("inference", "calibration", "report", "shutdown"))
@@ -164,6 +171,24 @@ object DeepDive extends Logging {
 
     // Clean up resources
     Context.shutdown()
+
+    // end try
+    } catch {
+      /* Notes @zifei:
+        This non-termination fix does not guarantee fixing all
+        non-termination errors, since we has multiple Akka actors
+        (InferenceManager, ExtractionManager, etc), and simply catching
+        errors in DeepDive class may not handle all cases.
+
+        But this try-catch do fix some errors, e.g. invalid configuration 
+        file (mandatory fields are not present) (in: Settings.loadFromConfig).
+        Tested in BrokenTest.scala
+      */
+      case e: Exception =>
+        // In case of any exception
+        Context.shutdown()
+        throw e
+    }
   }
 
 }

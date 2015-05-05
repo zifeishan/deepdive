@@ -12,11 +12,12 @@ import org.deepdive.Context
 import org.deepdive.settings._
 import scala.concurrent.duration._
 import scala.concurrent.{Future, Await}
+import scala.language.postfixOps
 import scala.util.Try
 
 /* Manages the Factor and Variable relations in the database */
 trait InferenceManager extends Actor with ActorLogging {
-  self: InferenceDataStoreComponent =>
+  self: InferenceRunnerComponent =>
   
   implicit val taskTimeout = Timeout(200 hours)
   import context.dispatcher
@@ -26,8 +27,6 @@ trait InferenceManager extends Actor with ActorLogging {
   def variableSchema: Map[String, _ <: VariableDataType]
   // Reference to the task manager
   def taskManager: ActorRef
-  // Described how to start the factor graph builder
-  def factorGraphBuilderProps : Props
   // Describes how to start the sampler
   def samplerProps : Props = Sampler.props
   // Describes how to start the calibration data writer
@@ -42,12 +41,9 @@ trait InferenceManager extends Actor with ActorLogging {
   lazy val SamplingOutputFile = new File(s"${SamplingOutputDir}/inference_result.out.text")
   lazy val SamplingOutputFileWeights = new File(s"${SamplingOutputDir}/inference_result.out.weights.text")
 
-  val factorGraphBuilder = context.actorOf(factorGraphBuilderProps, "factorGraphBuilder")
-
   override def preStart() {
     log.info("Starting")
-    inferenceDataStore.init()
-    context.watch(factorGraphBuilder)
+    inferenceRunner.init()
   }
 
   override val supervisorStrategy = OneForOneStrategy() {
@@ -55,20 +51,25 @@ trait InferenceManager extends Actor with ActorLogging {
   }
 
   def receive = {
-    case InferenceManager.GroundFactorGraph(factorDescs, holdoutFraction, holdoutQuery, 
-      skipLearning, weightTable, parallelGrounding) =>
+    case InferenceManager.GroundFactorGraph(factorDescs, calibrationSettings, 
+      skipLearning, weightTable) =>
       val _sender = sender
-      inferenceDataStore.asInstanceOf[SQLInferenceDataStore]
-        .groundFactorGraph(variableSchema, factorDescs, holdoutFraction, holdoutQuery, 
-          skipLearning, weightTable, dbSettings, parallelGrounding)
-      sender ! "OK"
-      // factorGraphBuilder ? FactorGraphBuilder.AddFactorsAndVariables(
-      //   factorDesc, holdoutFraction, batchSize) pipeTo _sender
+      try {
+        inferenceRunner.asInstanceOf[SQLInferenceRunner]
+          .groundFactorGraph(variableSchema, factorDescs, calibrationSettings,
+            skipLearning, weightTable, dbSettings)
+        sender ! "OK"
+      } catch {
+        // If some exception is thrown, terminate DeepDive
+        case e: Throwable =>
+        sender ! Status.Failure(e)
+        context.stop(self)
+      }
     case InferenceManager.RunInference(factorDescs, holdoutFraction, holdoutQuery, 
-      samplerJavaArgs, samplerOptions, skipSerializing, dbSettings, parallelGrounding) =>
+      samplerJavaArgs, samplerOptions, skipSerializing, dbSettings) =>
       val _sender = sender
       val result = runInference(factorDescs, holdoutFraction, holdoutQuery, 
-        samplerJavaArgs, samplerOptions, skipSerializing, dbSettings, parallelGrounding)
+        samplerJavaArgs, samplerOptions, skipSerializing, dbSettings)
       result pipeTo _sender
 
     case InferenceManager.WriteCalibrationData =>
@@ -78,7 +79,7 @@ trait InferenceManager extends Actor with ActorLogging {
       // Get and write calibraton data for each variable
       val futures = variableSchema.map { case(variable, dataType) =>
         val filename = s"${Context.outputDir}/calibration/${variable}.tsv"
-        val data = inferenceDataStore.getCalibrationData(variable, dataType, Bucket.ten)
+        val data = inferenceRunner.getCalibrationData(variable, dataType, Bucket.ten)
         calibrationWriter ? CalibrationDataWriter.WriteCalibrationData(filename, data)
       }
       Future.sequence(futures) pipeTo _sender
@@ -86,21 +87,20 @@ trait InferenceManager extends Actor with ActorLogging {
   }
 
   def runInference(factorDescs: Seq[FactorDesc], holdoutFraction: Double, holdoutQuery: Option[String], 
-    samplerJavaArgs: String, samplerOptions: String, skipSerializing: Boolean = false, dbSettings: DbSettings, 
-    parallelGrounding: Boolean) = {
+    samplerJavaArgs: String, samplerOptions: String, skipSerializing: Boolean = false, dbSettings: DbSettings) = {
 
     val sampler = context.actorOf(samplerProps, "sampler")
 
     val samplingResult = sampler ? Sampler.Run(samplerJavaArgs, samplerOptions,
       factorGraphDumpFileWeights.getCanonicalPath, factorGraphDumpFileVariables.getCanonicalPath,
       factorGraphDumpFileFactors.getCanonicalPath, factorGraphDumpFileEdges.getCanonicalPath,
-      factorGraphDumpFileMeta.getCanonicalPath, SamplingOutputDir.getCanonicalPath, parallelGrounding)
+      factorGraphDumpFileMeta.getCanonicalPath, SamplingOutputDir.getCanonicalPath)
     // Kill the sampler after it's done :)
     sampler ! PoisonPill
     samplingResult.map { x =>
-      inferenceDataStore.writebackInferenceResult(
+      inferenceRunner.writebackInferenceResult(
       variableSchema, SamplingOutputFile.getCanonicalPath, 
-      SamplingOutputFileWeights.getCanonicalPath, parallelGrounding, dbSettings)
+      SamplingOutputFileWeights.getCanonicalPath, dbSettings)
     }  
   }
 
@@ -110,16 +110,22 @@ object InferenceManager {
 
   /* An inference manager that uses postgres as its datastore */
   class PostgresInferenceManager(val taskManager: ActorRef, val variableSchema: Map[String, _ <: VariableDataType], val dbSettings: DbSettings) 
-    extends InferenceManager with PostgresInferenceDataStoreComponent {
-    def factorGraphBuilderProps = 
-      Props(classOf[FactorGraphBuilder.PostgresFactorGraphBuilder], variableSchema)
+    extends InferenceManager with PostgresInferenceRunnerComponent {
+    lazy val inferenceRunner = new PostgresInferenceRunner(dbSettings)
   }
 
-  // TODO: Refactor this to take the data store type as an argument
+  /* An inference manager that uses postgres as its datastore */
+  class MysqlInferenceManager(val taskManager: ActorRef, val variableSchema: Map[String, _ <: VariableDataType], val dbSettings: DbSettings) 
+    extends InferenceManager with MysqlInferenceRunnerComponent {
+    lazy val inferenceRunner = new MysqlInferenceRunner(dbSettings)
+  }
+
   def props(taskManager: ActorRef, variableSchema: Map[String, _ <: VariableDataType],
     dbSettings: DbSettings) = {
     dbSettings.driver match {
        case "org.postgresql.Driver" => Props(classOf[PostgresInferenceManager], taskManager, variableSchema, dbSettings)
+
+       case "com.mysql.jdbc.Driver" => Props(classOf[MysqlInferenceManager], taskManager, variableSchema, dbSettings)
     }
   }
     
@@ -128,11 +134,11 @@ object InferenceManager {
   // ==================================================
 
   // Executes a task to build part of the factor graph
-  case class GroundFactorGraph(factorDescs: Seq[FactorDesc], holdoutFraction: Double, holdoutQuery: Option[String], 
-    skipLearning: Boolean, weightTable: String, parallelGrounding: Boolean)
+  case class GroundFactorGraph(factorDescs: Seq[FactorDesc], calibrationSettings: CalibrationSettings, 
+    skipLearning: Boolean, weightTable: String)
   // Runs the sampler with the given arguments
   case class RunInference(factorDescs: Seq[FactorDesc], holdoutFraction: Double, holdoutQuery: Option[String], 
-    samplerJavaArgs: String, samplerOptions: String, skipSerializing: Boolean = false, dbSettings: DbSettings, parallelGrounding: Boolean)
+    samplerJavaArgs: String, samplerOptions: String, skipSerializing: Boolean = false, dbSettings: DbSettings)
   // Writes calibration data to predefined files
   case object WriteCalibrationData
 

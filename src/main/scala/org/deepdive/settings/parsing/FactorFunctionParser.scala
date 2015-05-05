@@ -2,12 +2,12 @@ package org.deepdive.settings
 
 import org.deepdive.Logging
 import scala.util.parsing.combinator.RegexParsers
+import scala.language.postfixOps
 
 object FactorFunctionParser extends RegexParsers with Logging {
   def relationOrField = """[\w]+""".r
   def arrayDefinition = """\[\]""".r
   def equalPredicate = """[0-9]+""".r
-  // def factorFunctionName = "Imply" | "Or" | "And" | "Equal" | "IsTrue"
 
   def implyFactorFunction = ("Imply" | "IMPLY") ~> "(" ~> rep1sep(factorVariable, ",") <~ ")" ^^ { varList =>
     ImplyFactorFunction(varList)
@@ -28,11 +28,6 @@ object FactorFunctionParser extends RegexParsers with Logging {
   def equalFactorFunction = ("Equal" | "EQUAL") ~> "(" ~> factorVariable ~ ("," ~> factorVariable) <~ ")" ^^ { 
     case v1 ~ v2 =>
     EqualFactorFunction(List(v1, v2))
-  }
-
-  def continuousLRFactorFunction = ("ContinuousLR" | "CONTINUOUSLR") ~> "(" ~> factorVariable ~ ("," ~> factorVariable) <~ ")" ^^ { 
-    case v1 ~ v2 =>
-    ContinuousLRFactorFunction(List(v1, v2))
   }
 
   def isTrueFactorFunction = ("IsTrue" | "ISTRUE") ~> "(" ~> factorVariable <~ ")" ^^ { variable =>
@@ -59,6 +54,6 @@ object FactorFunctionParser extends RegexParsers with Logging {
   }
 
   def factorFunc = implyFactorFunction | orFactorFunction | andFactorFunction | 
-    equalFactorFunction | isTrueFactorFunction | xorFactorFunction | multinomialFactorFunction | continuousLRFactorFunction
+    equalFactorFunction | isTrueFactorFunction | xorFactorFunction | multinomialFactorFunction
 
 }
