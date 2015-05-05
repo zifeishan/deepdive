@@ -446,6 +446,7 @@ trait SQLInferenceRunner extends InferenceRunner with Logging {
       // table of input query
       dataStore.dropAndCreateTableAs(querytable, factorDesc.inputQuery)
       execute(s"""ALTER TABLE ${querytable} ADD COLUMN id bigint;""")
+      execute(dataStore.analyzeTable(querytable))
 
       // handle factor id
       factorid += dataStore.assignIds(querytable.toLowerCase(), factorid, factoridSequence)
