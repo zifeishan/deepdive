@@ -438,12 +438,21 @@ class ExtractorRunner(dataStore: JdbcDataStore, dbSettings: DbSettings) extends 
     log.info(s"File dumped to ${actualDumpedPath}")
     val splitPrefix = s"${actualDumpedPath}-"
     val linesPerSplit = task.extractor.inputBatchSize
+    val maxParallel = task.extractor.parallelism
+    val splitNum = maxParallel * 10
+    val splitCmdByPar = s"split -n ${splitNum} " + actualDumpedPath + s" ${splitPrefix}"
     val splitCmd = s"split -a 10 -l ${linesPerSplit} " + actualDumpedPath + s" ${splitPrefix}"
 
     log.info(s"Executing split command...")
-    executeScriptOrFail(splitCmd, taskSender)
+    try {
+      // First try to split by parallelism. This is more scalable than specifying the input batch size.
+      Helpers.executeCmd(splitCmdByPar);
+    } catch {
+      case e: Throwable =>
+        log.debug(s"Split by number of chunks is not supported. Try to use batch size ${linesPerSplit} to split...") 
+        executeScriptOrFail(splitCmd, taskSender)
+    }
 
-    val maxParallel = task.extractor.parallelism
 
     // Note (msushkov): the extractor must take TSV as input and produce TSV as output
     val runCmd = s"find ${fpath} -name '${fname}-*' 2>/dev/null -print0 | xargs -0 -P ${maxParallel} -L 1 bash -c '${udfCmd} " + "<" + " \"$0\" > \"$0.out\"'"
