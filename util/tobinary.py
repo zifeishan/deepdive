@@ -32,6 +32,9 @@ for l in open(INPUTFOLDER + "/dd_factormeta"):
   nvars = '%d' % len(positives)
 
   print "SPLITTING", factor_name, "..."
+  # With gpfdist, empty factors do not create files.
+  if not os.path.isfile(INPUTFOLDER + '/dd_factors_' + factor_name + '_out'):
+      os.system('touch %s' % (INPUTFOLDER + '/dd_factors_' + factor_name + '_out'))
   CHUNKSIZE = str(int(math.ceil(float(os.popen('wc -l ' + INPUTFOLDER + '/dd_factors_' + factor_name + '_out').read().split(  )[0]) / CORES)))
   os.system('split -a 4 -l ' + CHUNKSIZE + ' ' + INPUTFOLDER + '/dd_factors_' + factor_name + '_out ' + INPUTFOLDER + '/dd_tmp/dd_factors_' + factor_name + '_out')
   print "BINARIZE ", factor_name, "..."
