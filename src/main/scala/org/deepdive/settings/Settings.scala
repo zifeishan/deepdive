@@ -160,6 +160,9 @@ case class RatioFactorFunction(variables: Seq[FactorFunctionVariable]) extends B
 /* A factor function describing logical semantics, (A -> Z) or (B -> Z) or (C -> Z)*/
 case class LogicalFactorFunction(variables: Seq[FactorFunctionVariable]) extends BooleanFactorFunction
 
+/* A factor function describing exactly one is true of A, B, C, ... */
+case class OneIsTrueFactorFunction(variables: Seq[FactorFunctionVariable]) extends BooleanFactorFunction
+
 /* A variable used in a Factor function */
 case class FactorFunctionVariable(relation: String, field: String, isArray: Boolean = false,
   isNegated: Boolean = false, predicate: Option[Long] = None) {
