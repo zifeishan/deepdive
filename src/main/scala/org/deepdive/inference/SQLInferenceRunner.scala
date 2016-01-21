@@ -912,7 +912,8 @@ trait SQLInferenceRunner extends InferenceRunner with Logging {
     execute(s"""
       UPDATE ${WeightsTable} SET initvalue = weight
       FROM ${fromWeightTable}
-      WHERE ${WeightsTable}.description = ${fromWeightTable}.description;
+      WHERE ${WeightsTable}.description = ${fromWeightTable}.description
+      AND   (${WeightsTable}.cardinality = ${fromWeightTable}.cardinality OR ${fromWeightTable}.cardinality IS NULL);
       """)
   }
 
